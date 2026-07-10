@@ -74,6 +74,35 @@ beats a fancier model on a noisy one.
 5. **Backtest** (`backtest/engine.py`) — one 48-month rolling loop scores all seven
    strategies on identical inputs and compares them to equal-weight.
 
+## The math
+
+**Dimension reduction.** The stationarised panel is standardised and projected onto
+its leading principal components — eigenvectors of the sample correlation matrix,
+retained to 95% cumulative variance ($\sum_{i\le k}\lambda_i / \sum_i \lambda_i \ge 0.95$).
+This compresses ~120 collinear indicators into a handful of orthogonal macro factors
+before any clustering.
+
+**Regimes.** K-Means minimises within-cluster variance,
+$\min \sum_c \sum_{x \in c} \lVert x - \mu_c \rVert^2$. Crisis months are so extreme
+they'd dominate a single clustering, so it's done in two steps: $k=2$ first isolates
+crisis vs. typical, then the typical months are re-clustered with $k^\*$ chosen by
+silhouette score. Out-of-sample months get soft regime probabilities from a softmax
+over (negative) distances to the fitted centroids — no refitting on test data.
+
+**Forecast and allocation.** The *Naive* forecast is the regime-conditional sample
+mean $\hat\mu_r = \bar r_{\,t \in r}$; *Ridge* regresses returns on the PCA factors
+with an $\ell_2$ penalty, $\min_w \lVert y - Fw \rVert^2 + \lambda \lVert w \rVert^2$,
+fit per regime. Weights come from mean-variance optimisation
+($\max_w\; w^\top\mu - \tfrac{\gamma}{2} w^\top \Sigma w$) under long-only
+($w_i \ge 0$, $\sum w_i = 1$) or long-short (net 100%, gross $\le$ 200%) constraints.
+
+## References
+
+- Markowitz, H. (1952), *Portfolio Selection*, Journal of Finance 7(1).
+- Ang, A. & Bekaert, G. (2004), *How Regimes Affect Asset Allocation*, Financial Analysts Journal 60(2) — the case for regime-conditional allocation.
+- McCracken, M. & Ng, S. (2016), *FRED-MD: A Monthly Database for Macroeconomic Research*, Journal of Business & Economic Statistics 34(4) — the data and the stationarity transform codes.
+- Hoerl, A. & Kennard, R. (1970), *Ridge Regression*, Technometrics 12(1).
+
 ## Project layout
 
 ```
