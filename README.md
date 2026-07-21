@@ -183,16 +183,26 @@ tractable rather than requiring a piecewise-linear approximation.
 
 **Solver policy.** MOSEK is *preferred, not required*. `solve` walks
 `("MOSEK", "CLARABEL", "SCS", "OSQP")` and takes the first that is installed and
-solves, so the repo runs without a commercial licence and CI stays green. Every
-`OptimizationResult` records which solver actually ran and whether it fell back, so
-a set of numbers can be traced to the code path that produced it.
+solves, so the repo runs without a commercial licence and CI stays green. MOSEK
+raises its licence error at solve time rather than import time, so the fallback is
+caught there rather than guessed at up front. Every `OptimizationResult` records
+which solver actually ran and whether it fell back, so a set of numbers can be
+traced to the code path that produced it.
 
-> **Reproducibility note.** The results above were produced on **CLARABEL** — the
-> open-source fallback — because no MOSEK licence was present on the machine that
-> generated them. Both are interior-point conic solvers attacking the same convex
-> problem, so they agree to solver tolerance, but the numbers should be attributed
-> to CLARABEL rather than to MOSEK. To run on MOSEK: `uv sync --extra mosek` with a
-> licence file in place; no code change is needed.
+> **Reproducibility note.** The results above were produced on **MOSEK 11.2.2**
+> under an academic licence — 496 solves per cost level per universe, **zero
+> fallbacks**, including the $p=1.5$ power-cone model. Reproduce with
+> `uv sync --extra mosek` and a licence at `~/mosek/mosek.lic`; without one the
+> policy falls through to CLARABEL and everything still runs.
+>
+> **Solver independence.** Every figure above is identical to three decimal places
+> under CLARABEL, which is the expected result for a convex program: the optimum is
+> a property of the problem, not of the code path. A parametrised regression test
+> (`test_mosek_and_clarabel_agree`, over both the QP and the power cone) pins the
+> two solvers to `atol=1e-3` on weights and `rtol=1e-6` on the objective, and skips
+> itself when MOSEK isn't licensed. Measured agreement on the reference problem is
+> 1.3e-4 (QP) and 5.6e-6 (power cone). The frictionless arm is bit-identical across
+> solvers because it never touches the conic path — it's still SLSQP.
 
 ## How it works
 

@@ -9,6 +9,7 @@ charging it for trading.
 """
 from __future__ import annotations
 
+import cvxpy as cp
 import numpy as np
 import pytest
 
@@ -162,6 +163,29 @@ def test_result_reports_the_solver_that_ran(market):
     assert result.solver in ("MOSEK", "CLARABEL", "SCS", "OSQP")
     # fell_back is True exactly when MOSEK (first preference) didn't run.
     assert result.fell_back == (result.solver != "MOSEK")
+
+
+@pytest.mark.skipif("MOSEK" not in cp.installed_solvers(), reason="MOSEK not licensed here")
+@pytest.mark.parametrize("exponent", [2.0, 1.5])
+def test_mosek_and_clarabel_agree(market, exponent):
+    """Solver independence: the answer is a property of the problem, not the code path.
+
+    It's a convex program, so the commercial interior-point solver and the
+    open-source one must land on the same optimum. This is what licenses the
+    fallback policy — and what lets results generated under either be compared.
+    Parametrised over the QP (p=2) and the power cone (p=1.5).
+    """
+    mu, cov, n = market
+    prev = np.zeros(n)
+    prev[0] = 1.0
+    costs = CostModel(10.0, 20.0, exponent=exponent)
+
+    mosek = solve_single_period(mu, cov, prev, costs=costs, solver_preference=("MOSEK",))
+    clarabel = solve_single_period(mu, cov, prev, costs=costs, solver_preference=("CLARABEL",))
+
+    assert mosek.solver == "MOSEK" and not mosek.fell_back
+    assert np.allclose(mosek.weights, clarabel.weights, atol=1e-3)
+    assert np.isclose(mosek.objective, clarabel.objective, rtol=1e-6)
 
 
 # --- regime transitions -----------------------------------------------------
