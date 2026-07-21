@@ -6,6 +6,15 @@ that regime. On a 1959–2025 walk-forward backtest the regime-aware strategies 
 roughly **2× the annual return of an equal-weight benchmark** at a comparable or
 better Sharpe.
 
+A second layer asks whether any of that survives trading costs. Position sizing is
+reformulated as a **convex program with transaction costs inside the objective**
+(cvxpy, MOSEK-first solver policy) and solved over a receding horizon on a
+Markov-projected regime forecast. The headline finding is not that the cost-aware
+optimiser wins everywhere — below ~13bps it doesn't — but that its net Sharpe is
+**nearly invariant to the cost assumption** (0.50–0.52 from 0 to 100bps) while the
+frictionless book's decays to **negative** over the same range. See
+[Trading costs](#trading-costs-the-convex-layer).
+
 ![Detected macro regimes](results/regime_timeline.png)
 
 ## The idea
@@ -56,6 +65,135 @@ beats a fancier model on a noisy one.
 
 ![Developed long-short equity curves](results/developed/cumulative_long_short.png)
 
+## Trading costs: the convex layer
+
+Every number above is **gross**. That flatters whichever strategy has the jumpiest
+weights, because the backtest banks its alpha and never pays the spread. The
+`--costs` path re-runs the whole thing as a single book carried through time —
+weights drift with returns, get rebalanced, and the trade is charged — comparing
+three ways of choosing the target book, all debited by the *same* cost model:
+
+| | what it does |
+|---|---|
+| **Frictionless** | the mean-variance weights from above, charged anyway |
+| **CostAware** | single-period convex solve with costs inside the objective |
+| **MultiPeriod** | receding-horizon solve over a Markov-projected forecast path |
+
+**Developed, long-only, net of 10bps linear + 20bps quadratic impact:**
+
+| Strategy | Gross Sharpe | Net Sharpe | Sharpe Lost | Ann. Turnover | Ann. Cost | Net Ann. Return |
+|---|---|---|---|---|---|---|
+| Frictionless | 0.686 | **0.566** | 0.120 | 4.36× | 217 bps | 10.27 |
+| CostAware | 0.606 | 0.531 | 0.075 | 2.99× | 142 bps | 10.02 |
+| MultiPeriod | 0.535 | 0.520 | **0.014** | **0.84×** | **28 bps** | 10.16 |
+| Equal-Weight | 0.369 | 0.367 | 0.002 | 0.13× | 3 bps | 5.49 |
+
+At 10bps the frictionless book still wins on net Sharpe. That is the honest result
+and it's worth stating plainly: the optimiser cuts turnover 5× and cost drag 8×,
+but gives up enough gross alpha doing it that cheap trading doesn't repay the
+discipline. The interesting question is therefore not "which is better" but **at
+what cost level does the answer flip**:
+
+![Developed cost sensitivity](results/developed/cost_sensitivity_long_only.png)
+
+| linear bps | Frictionless | CostAware | MultiPeriod | best |
+|---|---|---|---|---|
+| 0 | 0.686 | 0.636 | 0.498 | Frictionless |
+| 5 | 0.626 | 0.591 | 0.495 | Frictionless |
+| 10 | 0.566 | 0.531 | 0.520 | Frictionless |
+| 15 | 0.506 | 0.478 | **0.521** | MultiPeriod |
+| 25 | 0.385 | 0.412 | **0.509** | MultiPeriod |
+| 50 | 0.086 | 0.354 | **0.464** | MultiPeriod |
+| 100 | **−0.467** | 0.328 | **0.523** | MultiPeriod |
+
+The crossover sits between **12.5 and 15bps** (same ordering in emerging markets,
+which crosses in the same band). Two things are worth more than the crossover
+itself:
+
+1. **The multi-period line is flat.** Net Sharpe moves 0.498 → 0.523 across a
+   0–100bps sweep. The impact coefficient here is *assumed*, not fitted from ADV or
+   tick data — so a conclusion that survives a 20× move in that assumption is worth
+   considerably more than a single point estimate that doesn't.
+2. **The frictionless line goes negative.** By 100bps the ungoverned book has a
+   Sharpe of −0.47: all of its apparent edge was an artifact of not paying to trade.
+
+Same net annual return (10.16 vs 10.27) at **one-fifth the turnover** is also the
+capacity argument — the multi-period book is the one that could actually be run at
+size.
+
+## The convex program
+
+The frictionless sizer maximises $w^\top\mu - \tfrac{\gamma}{2}w^\top\Sigma w$ and
+re-solves from scratch monthly, so it is free to reverse the entire book for a
+basis point of expected edge. Charging the trade means optimising over the *move*
+from the current holdings $w_{\text{prev}}$, with $\Delta = w - w_{\text{prev}}$:
+
+$$\max_{w}\;\; \mu^\top w \;-\; \frac{\gamma}{2}\,w^\top\Sigma w \;-\; \underbrace{\kappa\lVert\Delta\rVert_1}_{\text{spread, fees}} \;-\; \underbrace{\eta\sum_i |\Delta_i|^{p}}_{\text{market impact}}$$
+
+subject to $\mathbf{1}^\top w = 1$ and either $w \ge 0$ (long-only) or
+$\lVert w\rVert_1 \le 2$ (long-short, net 100% / gross 200%).
+
+The linear term is what you always pay; the second is impact, superlinear in trade
+size, with $p=2$ the quadratic case and $p=1.5$ the square-root law from the impact
+literature. Every term is concave in $w$ and the feasible set is convex, so a
+returned solution is the **global** optimum — which is the substantive reason for
+leaving SLSQP behind, not solver preference.
+
+**Multi-period.** Over an $H$-month horizon, with $w_0 = w_{\text{prev}}$:
+
+$$\max_{w_1,\dots,w_H}\;\sum_{h=1}^{H}\delta^{\,h-1}\Big[\mu_h^\top w_h - \frac{\gamma}{2}w_h^\top\Sigma w_h - c(w_h - w_{h-1})\Big]$$
+
+Only $w_1$ is executed; next month the whole path is re-solved on fresh forecasts
+(receding horizon / MPC, following Boyd et al.). This matters because the cost of
+entering a position is paid once while the edge accrues for as long as the position
+is worth holding — so the optimiser sizes today's trade by how *persistent* the
+forecast is. On a controlled example, total notional traded moves monotonically
+with persistence: $\mu,\mu,\mu \to 1.52$; $\mu,\tfrac{1}{2}\mu,0.1\mu \to 1.12$;
+$\mu,-\mu,-\mu \to 0.82$; $\mu,0,0 \to 0.64$ (single-period: 0.67).
+
+**Where the forecast path comes from.** Regime labels are treated as a first-order
+Markov chain, $p_{t+h} = p_t P^h$, with Laplace-smoothed transition counts so a
+rare state (the crisis regime is sometimes a single month) still yields a usable
+row. Blending the per-regime means under $p_{t+h}$ gives $\mu_h$. Because regimes
+are persistent, the projected forecast decays smoothly toward the chain's
+stationary distribution instead of being assumed to hold forever or vanish after a
+month — and that decay profile is exactly what the optimiser trades against.
+
+### Why a conic solver, and what MOSEK does
+
+The objective is not differentiable ($\lVert\cdot\rVert_1$) and not a plain QP once
+$p = 1.5$, so it is put in **conic** form via epigraph variables:
+
+- **Turnover.** $\lVert\Delta\rVert_1 \le \mathbf{1}^\top t$ with $-t \le \Delta \le t$ — linear.
+- **Risk.** $\Sigma = LL^\top$ (Cholesky), so $w^\top\Sigma w = \lVert L^\top w\rVert_2^2 \le s$
+  is the rotated second-order cone $\big(\tfrac{s+1}{2}, \tfrac{s-1}{2}, L^\top w\big) \in \mathcal{Q}_r$.
+  Factorising also sidesteps the numerically-indefinite sample covariance that trips
+  a naive `quad_form` PSD check.
+- **Impact.** $|\Delta_i|^{3/2} \le u_i$ is the three-dimensional **power cone**
+  $(u_i, 1, \Delta_i) \in \mathcal{P}_3^{2/3,\,1/3}$.
+
+MOSEK is a primal-dual **interior-point** solver over exactly these cones, on the
+homogeneous self-dual embedding — it returns a primal-dual pair whose duality gap
+is a *certificate* of optimality (or a certificate of infeasibility), converging in
+$O(\sqrt{\nu}\log(1/\varepsilon))$ Newton steps for barrier parameter $\nu$. That
+certificate is the practical difference from a local NLP method: a solution is
+provably optimal rather than merely converged. MOSEK is also one of the few solvers
+with native power-cone support, which is what makes the $p=1.5$ impact model
+tractable rather than requiring a piecewise-linear approximation.
+
+**Solver policy.** MOSEK is *preferred, not required*. `solve` walks
+`("MOSEK", "CLARABEL", "SCS", "OSQP")` and takes the first that is installed and
+solves, so the repo runs without a commercial licence and CI stays green. Every
+`OptimizationResult` records which solver actually ran and whether it fell back, so
+a set of numbers can be traced to the code path that produced it.
+
+> **Reproducibility note.** The results above were produced on **CLARABEL** — the
+> open-source fallback — because no MOSEK licence was present on the machine that
+> generated them. Both are interior-point conic solvers attacking the same convex
+> problem, so they agree to solver tolerance, but the numbers should be attributed
+> to CLARABEL rather than to MOSEK. To run on MOSEK: `uv sync --extra mosek` with a
+> licence file in place; no code change is needed.
+
 ## How it works
 
 1. **Data** (`data/fredmd_loader.py`) — FRED-MD's ~120 US macro series, each made
@@ -73,6 +211,14 @@ beats a fancier model on a noisy one.
    (weights ≥ 0, fully invested) or long-short (net 100%, gross ≤ 200%).
 5. **Backtest** (`backtest/engine.py`) — one 48-month rolling loop scores all seven
    strategies on identical inputs and compares them to equal-weight.
+6. **Cost-aware optimisation** (`models/optimization.py`) — the convex program
+   above: `CostModel`, `Constraints`, single-period and receding-horizon solvers,
+   and the MOSEK-first solver policy.
+7. **Regime persistence** (`regimes/transitions.py`) — Markov transition matrix and
+   the projected forecast path the multi-period solver consumes.
+8. **Cost-aware backtest** (`backtest/cost_aware.py`) — carries one book through
+   time with drift, charges every strategy the same model, reports net-of-cost
+   performance beside turnover.
 
 ## The math
 
@@ -102,6 +248,11 @@ fit per regime. Weights come from mean-variance optimisation
 - Ang, A. & Bekaert, G. (2004), *How Regimes Affect Asset Allocation*, Financial Analysts Journal 60(2) — the case for regime-conditional allocation.
 - McCracken, M. & Ng, S. (2016), *FRED-MD: A Monthly Database for Macroeconomic Research*, Journal of Business & Economic Statistics 34(4) — the data and the stationarity transform codes.
 - Hoerl, A. & Kennard, R. (1970), *Ridge Regression*, Technometrics 12(1).
+- Boyd, S., Busseti, E., Diamond, S., Kahn, R., Koh, K., Nystrup, P. & Speth, J. (2017), *Multi-Period Trading via Convex Optimization*, Foundations and Trends in Optimization 3(1) — costs inside the objective, receding-horizon execution.
+- Almgren, R. & Chriss, N. (2000), *Optimal Execution of Portfolio Transactions*, Journal of Risk 3(2) — the impact/risk trade-off the cost model discretises.
+- Grinold, R. & Kahn, R. (1999), *Active Portfolio Management*, 2nd ed. — turnover, capacity, and the cost of chasing signal.
+- Hamilton, J. (1989), *A New Approach to the Economic Analysis of Nonstationary Time Series and the Business Cycle*, Econometrica 57(2) — Markov regime switching.
+- MOSEK ApS (2024), *MOSEK Modeling Cookbook* — conic reformulations and the power cone used for the $p=1.5$ impact term.
 
 ## Project layout
 
@@ -110,11 +261,12 @@ macro-regime-allocation/
 ├── data/raw/                # FRED-MD + MSCI inputs
 ├── src/macro_regime/
 │   ├── data/                # fredmd_loader, msci_loader, series_names
-│   ├── regimes/             # detection, naming
-│   ├── models/              # forecast (naive/ridge), allocation (MVO)
-│   ├── backtest/            # walk-forward engine
+│   ├── regimes/             # detection, naming, transitions (Markov chain)
+│   ├── models/              # forecast (naive/ridge), allocation (MVO),
+│   │                        #   optimization (convex, cost-aware, MOSEK-first)
+│   ├── backtest/            # engine (gross) + cost_aware (net, drift-tracked)
 │   ├── analytics/           # performance metrics
-│   ├── viz/                 # equity curves + regime timeline
+│   ├── viz/                 # equity curves, regime timeline, cost sensitivity
 │   ├── config.py            # paths, seed, train/test cutoff
 │   └── cli.py               # end-to-end entry point
 ├── results/                 # generated CSVs + charts
@@ -130,10 +282,20 @@ uv run macro-regime     # run both universes -> results/
 # options
 uv run macro-regime --universe developed
 uv run macro-regime --universe emerging -v
+
+# transaction-cost-aware optimisers + the sensitivity sweep
+uv run macro-regime --costs
+uv run macro-regime --costs --universe developed --linear-bps 15 --impact-bps 30
+uv run macro-regime --costs --long-short --horizon 6
+
+# optional: solve on MOSEK instead of the open-source fallback (needs a licence)
+uv sync --extra mosek
 ```
 
 Outputs land in `results/<universe>/` (performance CSVs + cumulative-return charts)
-plus a shared `results/regime_timeline.png`.
+plus a shared `results/regime_timeline.png`. The `--costs` run adds
+`cost_aware_<sleeve>.csv`, `cost_sensitivity_<sleeve>.csv` and the sensitivity
+chart.
 
 ## Data
 
@@ -143,8 +305,16 @@ plus a shared `results/regime_timeline.png`.
 
 ## Notes & caveats
 
-- Returns are monthly log returns; the backtest is gross of transaction costs and
-  assumes month-end execution — fine for a research comparison, not a live P&L claim.
+- Returns are monthly log returns and execution is assumed at month-end. The
+  headline tables are **gross**; the `--costs` path reports net-of-cost results with
+  turnover tracked through weight drift.
+- The cost parameters are **stylised, not calibrated** — monthly index returns carry
+  no microstructure to fit impact against, so there is no ADV or spread series
+  behind $\kappa$ and $\eta$. That is precisely why the result is framed as a
+  sensitivity band and a crossover rather than a single net-Sharpe number.
+- The Markov projection is first-order. Regime durations in the data are not truly
+  geometric, and a semi-Markov / duration-aware chain would fit the tails better; it
+  is enough to give the horizon a defensible shape, which is all the optimiser needs.
 - Regime names ("Broad-Based Expansion", etc.) are descriptive labels read off the
   cluster profiles, not formal NBER-style datings.
 - The crisis regime is rare by construction (a handful of months like 2020-04), so
