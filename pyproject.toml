@@ -16,7 +16,14 @@ dependencies = [
     "matplotlib>=3.8",
     "seaborn>=0.13",
     "openpyxl>=3.1",   # pandas needs this to read the MSCI .xlsx files
+    "cvxpy>=1.7.5",
 ]
+
+[project.optional-dependencies]
+# MOSEK is the preferred solver but is commercial and licence-gated, so it stays
+# optional: the solver policy in models/optimization.py falls back to the
+# open-source conic solvers cvxpy ships with. Enable via `uv sync --extra mosek`.
+mosek = ["mosek>=10.1"]
 
 [project.scripts]
 macro-regime = "macro_regime.cli:main"

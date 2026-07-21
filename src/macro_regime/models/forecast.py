@@ -22,7 +22,7 @@ class NaiveForecastModel:
         self.regime_stats: dict[int, dict] = {}
         self.n_assets_: int | None = None
 
-    def fit(self, returns: pd.DataFrame, regimes: np.ndarray) -> "NaiveForecastModel":
+    def fit(self, returns: pd.DataFrame, regimes: np.ndarray) -> NaiveForecastModel:
         r = returns.values
         self.n_assets_ = r.shape[1]
 
@@ -61,7 +61,7 @@ class RidgeRegressionModel:
         self.scalers: dict[int, StandardScaler] = {}
         self.n_assets_: int | None = None
 
-    def fit(self, features: pd.DataFrame, returns: pd.DataFrame, regimes: np.ndarray) -> "RidgeRegressionModel":
+    def fit(self, features: pd.DataFrame, returns: pd.DataFrame, regimes: np.ndarray) -> RidgeRegressionModel:
         x, y = features.values, returns.values
         self.n_assets_ = y.shape[1]
 
